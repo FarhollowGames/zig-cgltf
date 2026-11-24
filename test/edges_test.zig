@@ -150,6 +150,9 @@ test "edges: JSON the tokenizer and the parser refuse, and glTF 1.0" {
         "{\"a\":1\x7f}        ",
         "{\"a\":1\x80}        ",
         "{\"a\":[1\x7f]}       ",
+        // Booleans are true only for the text `true`, of any token.
+        "{\"materials\":[{\"doubleSided\":truex},{\"doubleSided\":\"true\"},{\"doubleSided\":true}]," ++
+            "\"accessors\":[{\"normalized\":true1},{\"normalized\":\"true\"},{\"normalized\":[true]}]}",
         // A backslash as the text's last byte, inside a string.
         "{\"assets\":\"\\",
         "{\"assets\":\"ab\\",
