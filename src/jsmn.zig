@@ -57,9 +57,36 @@ fn fillToken(token: *Token, token_type: TokenType, start: isize, end: isize) voi
     token.size = 0;
 }
 
+/// The first position from `pos` on that holds a delimiter or a byte
+/// outside 32 to 126, NUL included, or a position less than a chunk
+/// before the end of `js`: what a primitive's loop below would step over
+/// one byte at a time.
+fn skipPrimitiveBytes(js: []const u8, pos: usize) usize {
+    const chunk_len = 32;
+    const Chunk = @Vector(chunk_len, u8);
+    var at = pos;
+    while (at + chunk_len <= js.len) : (at += chunk_len) {
+        const chunk: *align(1) const Chunk = @ptrCast(js[at..]);
+        const bytes = chunk.*;
+        // Tab, carriage return and line feed are below 32.
+        const outside = (bytes < @as(Chunk, @splat(32))) | (bytes >= @as(Chunk, @splat(127)));
+        const delimiters = (bytes == @as(Chunk, @splat(' '))) | (bytes == @as(Chunk, @splat(','))) |
+            (bytes == @as(Chunk, @splat(']'))) | (bytes == @as(Chunk, @splat('}')));
+        const stops: u32 = @bitCast(outside | delimiters);
+        if (stops != 0) return at + @ctz(stops);
+    }
+    return at;
+}
+
 fn parsePrimitive(parser: *Parser, js: []const u8, tokens: ?[]Token) Error!void {
     const start = parser.pos;
-    while (parser.pos < js.len and js[parser.pos] != 0) : (parser.pos += 1) {
+    while (true) : (parser.pos += 1) {
+        parser.pos = skipPrimitiveBytes(js, parser.pos);
+        if (parser.pos >= js.len or js[parser.pos] == 0) {
+            // Strict mode: a primitive ends at a delimiter, not at the end.
+            parser.pos = start;
+            return error.Part;
+        }
         switch (js[parser.pos]) {
             '\t', '\r', '\n', ' ', ',', ']', '}' => break,
             else => {},
@@ -68,10 +95,6 @@ fn parsePrimitive(parser: *Parser, js: []const u8, tokens: ?[]Token) Error!void 
             parser.pos = start;
             return error.Inval;
         }
-    } else {
-        // Strict mode: a primitive ends at a delimiter, not at the end.
-        parser.pos = start;
-        return error.Part;
     }
     const all = tokens orelse {
         parser.pos -= 1;
