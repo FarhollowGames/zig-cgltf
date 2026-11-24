@@ -721,3 +721,30 @@ test "edges: element offsets that wrap to before the view read the buffer there,
     try expectSameReadsUnrefused(json, 2, .elements, &.{ max / 4, 0 });
     try expectSameReadsUnrefused(json, 3, .elements, &.{ 0, 2 });
 }
+
+test "edges: long loops of parents, with chains leading into them, in shuffled order, validate as the original's" {
+    // Loops longer than the walks of a few steps the random trees give,
+    // so that a loop is found however many steps it takes to go round.
+    const gpa = testing.allocator;
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(gpa);
+    var parents: [300]usize = undefined;
+    var order: [parents.len]usize = undefined;
+    var prng: std.Random.DefaultPrng = .init(0x51c0de);
+    const random = prng.random();
+    for ([_]usize{ 2, 3, 7, 8, 9, 15, 16, 17, 31, 33, 64, 65, 100, 127, 129, 200, 255, 257, 299 }) |length| {
+        for (0..3) |_| {
+            const n = random.intRangeAtMost(usize, length, parents.len);
+            for (order[0..n], 0..) |*o, k| o.* = k;
+            random.shuffle(usize, order[0..n]);
+            // The loop goes round the first `length` of the order; each
+            // node after them hangs from an earlier one, so the chains
+            // lead into the loop.
+            for (0..length) |k| parents[order[k]] = order[(k + 1) % length];
+            for (length..n) |k| parents[order[k]] = order[random.uintLessThan(usize, k)];
+            out.clearRetainingCapacity();
+            try nodesWithParents(&out, gpa, parents[0..n]);
+            try expectSameJson(out.items);
+        }
+    }
+}
