@@ -146,6 +146,13 @@ test "edges: JSON the tokenizer and the parser refuse, and glTF 1.0" {
         "{\"a\":\"\\u12g4\"}",
         "{\"a\":\"\x01\"}",
         "{\"a\":tru}         ",
+        // DEL and a byte above it inside a primitive.
+        "{\"a\":1\x7f}        ",
+        "{\"a\":1\x80}        ",
+        "{\"a\":[1\x7f]}       ",
+        // A backslash as the text's last byte, inside a string.
+        "{\"assets\":\"\\",
+        "{\"assets\":\"ab\\",
         "{\"a\":1}x",
         "{\"a\":1}\x00garbage after a NUL",
         "{\"a\":1\x00}",
