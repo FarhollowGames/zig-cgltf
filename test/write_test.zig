@@ -330,3 +330,28 @@ test "write: every property of every material extension writes as the original w
     try testing.expectEqual(@as(usize, 18), std.mem.count(u8, text, "\"KHR_texture_transform\": {"));
     try testing.expect(std.mem.indexOf(u8, text, "\"diffuseFactor\": [0.100000001, 0.200000003, 0.300000012, 0.400000006]") != null);
 }
+
+test "write: values cgltf leaves out are left out" {
+    // Camera values equal to cgltf's -1 default; a spot light's cone at its
+    // default; sparse indices without a component type; an alpha cutoff
+    // outside the MASK mode; and attenuation distances that are not below
+    // FLT_MAX, which cgltf does not write. The fuzz and the sample models
+    // give none of them.
+    const json =
+        \\{"asset":{"version":"2.0"},
+        \\"cameras":[{"type":"orthographic","orthographic":{"xmag":-1,"ymag":-1,"zfar":-1,"znear":-1}},
+        \\{"type":"perspective","perspective":{"aspectRatio":-1,"yfov":-1,"zfar":-1,"znear":-1}}],
+        \\"extensions":{"KHR_lights_punctual":{"lights":[{"type":"spot","spot":{}}]}},
+        \\"buffers":[{"byteLength":8}],"bufferViews":[{"buffer":0,"byteLength":8}],
+        \\"accessors":[{"componentType":5126,"type":"SCALAR","count":2,"sparse":{"count":1,
+        \\"indices":{"bufferView":0},"values":{"bufferView":0}}}],
+        \\"materials":[{"alphaMode":"BLEND","alphaCutoff":0.25},{"alphaCutoff":0.75},
+        \\{"extensions":{"KHR_materials_volume":{"attenuationDistance":1e39}}},
+        \\{"extensions":{"KHR_materials_volume":{"attenuationDistance":nan}}}]}
+    ;
+    const text = try expectSameTextOf(json);
+    defer testing.allocator.free(text);
+    for ([_][]const u8{ "mag", "far", "near", "aspectRatio", "yfov", "ConeAngle", "\"componentType\": 0", "alphaCutoff", "attenuationDistance" }) |left_out| {
+        try testing.expect(std.mem.indexOf(u8, text, left_out) == null);
+    }
+}
