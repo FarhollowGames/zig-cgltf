@@ -153,6 +153,9 @@ test "edges: JSON the tokenizer and the parser refuse, and glTF 1.0" {
         // Booleans are true only for the text `true`, of any token.
         "{\"materials\":[{\"doubleSided\":truex},{\"doubleSided\":\"true\"},{\"doubleSided\":true}]," ++
             "\"accessors\":[{\"normalized\":true1},{\"normalized\":\"true\"},{\"normalized\":[true]}]}",
+        // A hexadecimal float past a double's digits, whose last digit
+        // rounds the double up and so the float above the tie.
+        "{\"nodes\":[{\"translation\":[0x1.000001000000080000000000000001p0,0x1.000001000000080000000000000000p0,0]}]}",
         // A backslash as the text's last byte, inside a string.
         "{\"assets\":\"\\",
         "{\"assets\":\"ab\\",
