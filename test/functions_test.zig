@@ -254,6 +254,24 @@ test "base64: fuzz: random texts decode as the original decodes them" {
     }.case);
 }
 
+test "base64: every byte at every lane of a whole chunk decodes as the original decodes it" {
+    // The 64-character decoder classifies characters by ranges, so the
+    // bytes beside each range ('@', '[', '`', '{', '/', ':', ',', ...) and
+    // every byte above 127 are checked in each lane, with a chunk before
+    // and a tail after it.
+    var text: [160:0]u8 = undefined;
+    for (&text, 0..) |*b, i| b.* = std.base64.standard_alphabet_chars[(i * 7) % 64];
+    text[text.len] = 0;
+    for (64..128) |lane| {
+        for (1..256) |value| {
+            const kept = text[lane];
+            text[lane] = @intCast(value);
+            try expectSameBase64(120, &text);
+            text[lane] = kept;
+        }
+    }
+}
+
 test "sizes: components, component sizes and element sizes match for every type" {
     for (0..10) |t| {
         for (0..10) |ct| {
