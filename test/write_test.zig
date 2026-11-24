@@ -210,6 +210,36 @@ test "write: the output's bytes past the text are left as the original leaves th
     try testing.expectEqualSlices(u8, &expected, &actual);
 }
 
+test "write: every sample model in a larger fixed output leaves the bytes past the text as the original" {
+    // The writer copies indents, names and integers into the output's
+    // unused bytes as blocks; none may land past the text. The test above
+    // writes a text with no integer and no float.
+    const gpa = testing.allocator;
+    const io = testing.io;
+    const paths = try samples.modelPaths(gpa, io);
+    defer samples.freePaths(gpa, paths);
+    for (paths) |path| {
+        var parsed = (try parseBoth(gpa, io, path)) orelse continue;
+        defer parsed.deinit();
+        errdefer std.debug.print("model: {s}\n", .{path});
+        var options = std.mem.zeroes(c.cgltf_options);
+        const size = c.cgltf_write(&options, null, 0, parsed.original);
+        const expected = try gpa.alloc(u8, size + 256);
+        defer gpa.free(expected);
+        @memset(expected, 0xAA);
+        try testing.expectEqual(size, c.cgltf_write(&options, expected.ptr, expected.len, parsed.original));
+        const actual = try gpa.alloc(u8, size + 256);
+        defer gpa.free(actual);
+        @memset(actual, 0xAA);
+        var out: std.Io.Writer = .fixed(actual);
+        try cgltf.write(&parsed.port, &out);
+        try testing.expectEqual(size - 1, out.end);
+        // cgltf's NUL, which the port leaves out as documented.
+        actual[size - 1] = 0;
+        try testing.expectEqualSlices(u8, expected, actual);
+    }
+}
+
 test "write: a GLB whose BIN chunk needs padding is the original's" {
     // No sample GLB has a BIN chunk whose length is not a multiple of four,
     // so the BIN padding is never written by the file tests.
