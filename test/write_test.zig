@@ -355,3 +355,20 @@ test "write: values cgltf leaves out are left out" {
         try testing.expect(std.mem.indexOf(u8, text, left_out) == null);
     }
 }
+
+test "write: byte offsets cgltf casts through an int write as the original writes them" {
+    // cgltf writes an accessor's and its sparse indices' and values' byte
+    // offsets as `size_t` from an `int`: 2^31 is sign-extended, and 2^32 + 1
+    // is 1. The fuzz gives sparse values no byte offset.
+    const json =
+        \\{"asset":{"version":"2.0"},"buffers":[{"byteLength":8}],"bufferViews":[{"buffer":0,"byteLength":8}],
+        \\"accessors":[{"componentType":5126,"type":"SCALAR","count":2,"byteOffset":2147483648,"sparse":{"count":1,
+        \\"indices":{"bufferView":0,"componentType":5125,"byteOffset":2147483648},"values":{"bufferView":0,"byteOffset":2147483648}}},
+        \\{"componentType":5126,"type":"SCALAR","count":2,"byteOffset":4294967297,"sparse":{"count":1,
+        \\"indices":{"bufferView":0,"componentType":5125,"byteOffset":4294967297},"values":{"bufferView":0,"byteOffset":4294967297}}}]}
+    ;
+    const text = try expectSameTextOf(json);
+    defer testing.allocator.free(text);
+    try testing.expectEqual(@as(usize, 3), std.mem.count(u8, text, "\"byteOffset\": 18446744071562067968,"));
+    try testing.expectEqual(@as(usize, 3), std.mem.count(u8, text, "\"byteOffset\": 1,"));
+}
