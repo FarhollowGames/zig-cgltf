@@ -29,9 +29,10 @@ on those calls. Each case has a test in `test/refusals_test.zig`.
 
 `bufferViewData` of a view whose offset lies past its buffer's memory is also
 `error.OutOfBounds`, where cgltf returns a pointer past the end (test: `refusal: a view's data
-past the buffer's memory`). The accessor helpers read such a view as empty: a call that reads
-nothing from it, such as `unpackFloats` into an empty output, gives cgltf's result, and one
-that reads anything is refused.
+past the buffer's memory`). The accessor helpers add every offset to the view's start with
+wrapping, as cgltf adds them to its pointer: a call that reads nothing from such a view, such
+as `unpackFloats` into an empty output, gives cgltf's result, an offset that wraps back into
+the buffer's memory reads the bytes there, as cgltf's does, and any other read is refused.
 
 The oracle tests check every refusal: for each call the port refuses, they work out from
 cgltf's structs whether cgltf could read past the memory or write past the output there, and
@@ -101,6 +102,13 @@ buffer, reads the same bytes as cgltf.
   fails, a deliberate difference: cgltf returns success there only because it ignores the
   results of `fwrite` and `fclose`, so a full disk or a failed device gives a short file
   that cgltf reports as written. The port reports the failure.
+- **A directory as a file.** `parseFile` of a directory, or a buffer whose path is a
+  directory, is `error.IoError`. cgltf's result there depends on the file system: its
+  `fopen` of a directory succeeds and `ftell` gives the directory's size, or `LONG_MAX` on
+  some file systems, so it returns `cgltf_result_io_error` or `cgltf_result_out_of_memory`.
+  No test, since the result the port would match is the file system's.
+- **A path holding a NUL.** `writeFile` takes the path as a slice, so a path that holds a
+  NUL is `error.FileNotFound`, where cgltf's C string ends at the NUL.
 - **Empty arrays.** A node's `children`, a skin's `joints` and a scene's `nodes` are `null`
   when the file has none and empty when it has `[]`, because cgltf writes back the empty
   arrays it read.

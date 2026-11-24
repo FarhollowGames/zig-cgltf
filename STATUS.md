@@ -1,5 +1,62 @@
 # Status
 
+## Review report, 24 November 2026
+
+On branch `review/remaining-passes`, from `main` at `v0.1.0` (`3a71f9a`). `release/candidate`,
+`review/perf-and-skeptic`, `port/writer` and `perf/validate` are no longer on the remote; their
+merges are on `main` in the order the release candidate gave, and `main` is tagged `v0.1.0`.
+
+Already reviewed: no feature could be shown to be. The port, its performance passes and its
+skeptic reviews were all committed from one session, so nothing shows that the agent that
+reviewed a feature had not written it; and validate's second pass, world transforms,
+`readIndex`, `readUint` and the writer's NUL refusals were changed after the last review.
+
+Run now, each by an agent that did not write the code: a skeptic review in three parts
+(parsing and loading; validate, accessors and transforms; the writer and `%.9g`), then a
+performance pass. Every row is now `reviewed`.
+
+Skeptic findings, each with a test that failed first:
+- `atof` of a hexadecimal float of more than 16 significant digits was one ulp low, where glibc
+  rounds on every digit (`0x1.000001000000080000000000000001p0` read as a float is 1.0, where
+  cgltf reads 1.0000001); fixed.
+- `readUint` of `r_32f` components and `readFloat` and `unpackFloats` of normalized `r_32u`
+  components were refused past the buffer's memory, where cgltf gives 0 without reading; fixed.
+  One call of `refusal: accessor reads past the buffer's memory` now reads a 5125 accessor.
+- An element offset that wraps to before the view was refused, where cgltf's pointer reads the
+  buffer there (a `byteStride` of 2^63 - 1 reaches it); fixed, and `doc/parity.md` reworded.
+- Test gaps, each a change of the code the suite let through: base64 bytes beside the
+  decoder's letter and digit ranges, jsmn's DEL and a final backslash, booleans from `truex`,
+  short data URIs, backslash paths, long loops of parents, a refused `writeFile` leaving the
+  file alone, `writeFile`'s `IoError` (on `/dev/full`), every material extension's
+  properties, defaults cgltf leaves out, byte offsets cast through an `int`, strings decoded
+  to a NUL, and bytes past the text of every sample model. Tests added.
+- Measured and documented, not changed: `parseFile` of a directory, and a path holding a NUL
+  (`doc/parity.md`).
+
+Performance pass, before and after in the same run, the port's ms, the middle of three runs at `--rounds 3` alternated, kept only where the
+gain is past the spread of repeated runs: jsmn finds a primitive's bytes 32 at a time (parse
+glTF 1.11 to 1.30, 182.6 to 160.1 ms), `readFloat` jumps once on component type, element type
+and normalization (read float 1.26 to 1.71, 368.6 to 267.9 ms), and `readUint` once on component
+and element type (read uint 1.41 to 1.87, 268.1 to 207.1 ms). Dropped, with no clear gain:
+whitespace skipped with vectors, `strtod`'s digit scan specialized, keys compared as one
+vector, and a fixed-length bounds check alone. The skeptic fixes cost parse glTF about 6% and
+read uint about 4% before the pass.
+
+Benchmark, `zig build bench -- --rounds 3` pinned to one core, on a 4-core Intel Xeon @
+2.10GHz virtual machine (`x86_64`, AVX-512), Linux, Zig 0.17.0, cgltf's time over the port's,
+`main` / this branch: parse glTF 1.20 / 1.30, parse GLB 1.09 / 1.13, decode base64 38.5 /
+38.4, validate 1.91 / 1.85, unpack floats 5.06 / 4.43, read float 1.17 / 1.71, read uint
+1.46 / 1.89, unpack indices 2.67 / 2.51, read index 0.91 / 1.06, world transforms 1.00 /
+1.02, write 8.62 / 8.86. cgltf's own time moves by up to 15% between binaries, so rows whose
+port time did not change (validate, unpack floats, unpack indices) moved within that.
+World transforms is even with cgltf on this machine (1.18 on the earlier machine).
+
+Tests: `zig build test` runs 81, all passing in ReleaseSafe: 17 unit tests, 46 oracle tests
+and 18 tests of refusals, failed allocations and a custom reader.
+
+Open for the author: the three fixes change results after `v0.1.0`; release is the author's
+call.
+
 ## Release candidate
 
 `release/candidate`, from `main`, merges `review/perf-and-skeptic`, `port/writer` and
@@ -143,7 +200,11 @@ Every item's state:
 - **oracle-tested**: tests run the original and the port on the same inputs and compare every
   field, string byte, index and float bit;
 - **benchmarked**: timed against the original by `zig build bench`;
-- **reviewed**: a reviewer that did not write the port has tried to break it.
+- **reviewed**: a reviewer that did not write the port has tried to break it, and a
+  performance pass by an agent that did not write it has run.
+
+Every row not left out is reviewed; the state after reviewed is the furthest its tests and the
+benchmark go.
 
 ## Work state
 
@@ -228,47 +289,47 @@ The tests the tables name, by short name:
 
 | upstream | zig-cgltf | tests | state |
 | --- | --- | --- | --- |
-| `cgltf_parse` (glTF and GLB from memory) | `parse` | samples-memory, glb, options, fuzz | benchmarked |
-| `cgltf_parse_file` | `parseFile` | samples, files, reader | oracle-tested |
-| `cgltf_options.json_token_count` | `Options.json_token_count` | samples-memory, options, fuzz, refusals | oracle-tested |
-| `cgltf_options.memory` (alloc and free callbacks) | an `std.mem.Allocator` | samples, allocation | oracle-tested |
-| `cgltf_options.file` (read and release callbacks) | `Options.file_reader` | samples, files, reader | oracle-tested |
-| `cgltf_options.type` (auto, gltf, glb) | `Options.file_type` | options, glb, fuzz | oracle-tested |
-| `cgltf_free` | `Gltf.deinit` | allocation, reader | oracle-tested |
-| jsmn (strict, parent links) | `jsmn.zig` | json, fuzz | oracle-tested |
-| C's `atoi`, `atoll`, `atof` as cgltf reads numbers | `number.zig` | numbers | oracle-tested |
-| glTF 1.0 detection (`cgltf_result_legacy_gltf`) | `error.LegacyGltf` | json, glb | oracle-tested |
-| extras as JSON offsets and text | `Extras` | strings, samples | oracle-tested |
-| unknown extensions as name and JSON | `Extension` | extensions, json | oracle-tested |
-| `extensionsUsed`, `extensionsRequired` | `extensions_used`, `extensions_required` | json, samples | oracle-tested |
-| reference fixup (`cgltf_fixup_pointers`) | indices checked against their arrays | json, fuzz | oracle-tested |
+| `cgltf_parse` (glTF and GLB from memory) | `parse` | samples-memory, glb, options, fuzz | reviewed, benchmarked |
+| `cgltf_parse_file` | `parseFile` | samples, files, reader | reviewed, oracle-tested |
+| `cgltf_options.json_token_count` | `Options.json_token_count` | samples-memory, options, fuzz, refusals | reviewed, oracle-tested |
+| `cgltf_options.memory` (alloc and free callbacks) | an `std.mem.Allocator` | samples, allocation | reviewed, oracle-tested |
+| `cgltf_options.file` (read and release callbacks) | `Options.file_reader` | samples, files, reader | reviewed, oracle-tested |
+| `cgltf_options.type` (auto, gltf, glb) | `Options.file_type` | options, glb, fuzz | reviewed, oracle-tested |
+| `cgltf_free` | `Gltf.deinit` | allocation, reader | reviewed, oracle-tested |
+| jsmn (strict, parent links) | `jsmn.zig` | json, fuzz | reviewed, oracle-tested |
+| C's `atoi`, `atoll`, `atof` as cgltf reads numbers | `number.zig` | numbers | reviewed, oracle-tested |
+| glTF 1.0 detection (`cgltf_result_legacy_gltf`) | `error.LegacyGltf` | json, glb | reviewed, oracle-tested |
+| extras as JSON offsets and text | `Extras` | strings, samples | reviewed, oracle-tested |
+| unknown extensions as name and JSON | `Extension` | extensions, json | reviewed, oracle-tested |
+| `extensionsUsed`, `extensionsRequired` | `extensions_used`, `extensions_required` | json, samples | reviewed, oracle-tested |
+| reference fixup (`cgltf_fixup_pointers`) | indices checked against their arrays | json, fuzz | reviewed, oracle-tested |
 
 ## Loading and checking
 
 | upstream | zig-cgltf | tests | state |
 | --- | --- | --- | --- |
-| `cgltf_load_buffers` (files, data URIs, GLB chunk) | `loadBuffers` | samples, buffers, files, fuzz | oracle-tested |
-| `cgltf_load_buffer_base64` | `loadBufferBase64` | base64, buffers | benchmarked |
-| `cgltf_decode_string` | `decodeString` | decoding, refusals | oracle-tested |
-| `cgltf_decode_uri` | `decodeUri` | decoding, files | oracle-tested |
-| `cgltf_validate` | `validate` | validation, parents, samples, fuzz, refusals | benchmarked |
-| `cgltf_copy_extras_json` (deprecated) | `copyExtrasJson` | samples, strings, refusals | oracle-tested |
+| `cgltf_load_buffers` (files, data URIs, GLB chunk) | `loadBuffers` | samples, buffers, files, fuzz | reviewed, oracle-tested |
+| `cgltf_load_buffer_base64` | `loadBufferBase64` | base64, buffers | reviewed, benchmarked |
+| `cgltf_decode_string` | `decodeString` | decoding, refusals | reviewed, oracle-tested |
+| `cgltf_decode_uri` | `decodeUri` | decoding, files | reviewed, oracle-tested |
+| `cgltf_validate` | `validate` | validation, parents, samples, fuzz, refusals | reviewed, benchmarked |
+| `cgltf_copy_extras_json` (deprecated) | `copyExtrasJson` | samples, strings, refusals | reviewed, oracle-tested |
 
 ## Accessors, views and nodes
 
 | upstream | zig-cgltf | tests | state |
 | --- | --- | --- | --- |
-| `cgltf_accessor_read_float` | `readFloat` | accessors, layouts, samples, refusals | benchmarked |
-| `cgltf_accessor_read_uint` | `readUint` | accessors, layouts, samples, refusals | oracle-tested |
-| `cgltf_accessor_read_index` | `readIndex` | accessors, layouts, samples, refusals | benchmarked |
-| `cgltf_accessor_unpack_floats` | `unpackFloats` | accessors, sparse, layouts, samples, refusals | benchmarked |
-| `cgltf_accessor_unpack_indices` | `unpackIndices` | accessors, layouts, samples, refusals | benchmarked |
-| sparse accessors (in the five above) | as upstream | sparse, fuzz, refusals | oracle-tested |
-| `cgltf_buffer_view_data` | `bufferViewData` | samples, layouts, fuzz, refusals | oracle-tested |
-| `cgltf_find_accessor` | `findAccessor` | samples, fuzz | oracle-tested |
-| `cgltf_num_components`, `cgltf_component_size`, `cgltf_calc_size` | `numComponents`, `componentSize`, `calcSize` | sizes | oracle-tested |
-| `cgltf_node_transform_local`, `cgltf_node_transform_world` | `transformLocal`, `transformWorld` | samples, fuzz, refusals | benchmarked |
-| `cgltf_mesh_index` and the other 15 `_index` functions | references are already indices | samples | oracle-tested |
+| `cgltf_accessor_read_float` | `readFloat` | accessors, layouts, samples, refusals | reviewed, benchmarked |
+| `cgltf_accessor_read_uint` | `readUint` | accessors, layouts, samples, refusals | reviewed, benchmarked |
+| `cgltf_accessor_read_index` | `readIndex` | accessors, layouts, samples, refusals | reviewed, benchmarked |
+| `cgltf_accessor_unpack_floats` | `unpackFloats` | accessors, sparse, layouts, samples, refusals | reviewed, benchmarked |
+| `cgltf_accessor_unpack_indices` | `unpackIndices` | accessors, layouts, samples, refusals | reviewed, benchmarked |
+| sparse accessors (in the five above) | as upstream | sparse, fuzz, refusals | reviewed, oracle-tested |
+| `cgltf_buffer_view_data` | `bufferViewData` | samples, layouts, fuzz, refusals | reviewed, oracle-tested |
+| `cgltf_find_accessor` | `findAccessor` | samples, fuzz | reviewed, oracle-tested |
+| `cgltf_num_components`, `cgltf_component_size`, `cgltf_calc_size` | `numComponents`, `componentSize`, `calcSize` | sizes | reviewed, oracle-tested |
+| `cgltf_node_transform_local`, `cgltf_node_transform_world` | `transformLocal`, `transformWorld` | samples, fuzz, refusals | reviewed, benchmarked |
+| `cgltf_mesh_index` and the other 15 `_index` functions | references are already indices | samples | reviewed, oracle-tested |
 
 ## Extensions
 
@@ -276,27 +337,27 @@ Each is read into the fields cgltf reads it into.
 
 | extension | tests | state |
 | --- | --- | --- |
-| `KHR_draco_mesh_compression` | extensions, samples, fuzz | oracle-tested |
-| `KHR_lights_punctual` | extensions, samples, fuzz | oracle-tested |
-| `KHR_materials_anisotropy` | extensions, samples, fuzz | oracle-tested |
-| `KHR_materials_clearcoat` | extensions, samples, fuzz | oracle-tested |
-| `KHR_materials_diffuse_transmission` | extensions, samples, fuzz | oracle-tested |
-| `KHR_materials_dispersion` | extensions, samples, fuzz | oracle-tested |
-| `KHR_materials_emissive_strength` | extensions, samples, fuzz | oracle-tested |
-| `KHR_materials_ior` | extensions, samples, fuzz | oracle-tested |
-| `KHR_materials_iridescence` | extensions, samples, fuzz | oracle-tested |
-| `KHR_materials_pbrSpecularGlossiness` | extensions, samples, fuzz | oracle-tested |
-| `KHR_materials_sheen` | extensions, samples, fuzz | oracle-tested |
-| `KHR_materials_specular` | extensions, samples, fuzz | oracle-tested |
-| `KHR_materials_transmission` | extensions, samples, fuzz | oracle-tested |
-| `KHR_materials_unlit` | extensions, samples, fuzz | oracle-tested |
-| `KHR_materials_variants` | extensions, samples, fuzz | oracle-tested |
-| `KHR_materials_volume` | extensions, samples, fuzz | oracle-tested |
-| `KHR_meshopt_compression`, `EXT_meshopt_compression` | extensions, samples, fuzz | oracle-tested |
-| `KHR_texture_basisu` | extensions, samples, fuzz | oracle-tested |
-| `KHR_texture_transform` | extensions, samples, fuzz | oracle-tested |
-| `EXT_mesh_gpu_instancing` | extensions, samples, fuzz | oracle-tested |
-| `EXT_texture_webp` | extensions, samples, fuzz | oracle-tested |
+| `KHR_draco_mesh_compression` | extensions, samples, fuzz | reviewed, oracle-tested |
+| `KHR_lights_punctual` | extensions, samples, fuzz | reviewed, oracle-tested |
+| `KHR_materials_anisotropy` | extensions, samples, fuzz | reviewed, oracle-tested |
+| `KHR_materials_clearcoat` | extensions, samples, fuzz | reviewed, oracle-tested |
+| `KHR_materials_diffuse_transmission` | extensions, samples, fuzz | reviewed, oracle-tested |
+| `KHR_materials_dispersion` | extensions, samples, fuzz | reviewed, oracle-tested |
+| `KHR_materials_emissive_strength` | extensions, samples, fuzz | reviewed, oracle-tested |
+| `KHR_materials_ior` | extensions, samples, fuzz | reviewed, oracle-tested |
+| `KHR_materials_iridescence` | extensions, samples, fuzz | reviewed, oracle-tested |
+| `KHR_materials_pbrSpecularGlossiness` | extensions, samples, fuzz | reviewed, oracle-tested |
+| `KHR_materials_sheen` | extensions, samples, fuzz | reviewed, oracle-tested |
+| `KHR_materials_specular` | extensions, samples, fuzz | reviewed, oracle-tested |
+| `KHR_materials_transmission` | extensions, samples, fuzz | reviewed, oracle-tested |
+| `KHR_materials_unlit` | extensions, samples, fuzz | reviewed, oracle-tested |
+| `KHR_materials_variants` | extensions, samples, fuzz | reviewed, oracle-tested |
+| `KHR_materials_volume` | extensions, samples, fuzz | reviewed, oracle-tested |
+| `KHR_meshopt_compression`, `EXT_meshopt_compression` | extensions, samples, fuzz | reviewed, oracle-tested |
+| `KHR_texture_basisu` | extensions, samples, fuzz | reviewed, oracle-tested |
+| `KHR_texture_transform` | extensions, samples, fuzz | reviewed, oracle-tested |
+| `EXT_mesh_gpu_instancing` | extensions, samples, fuzz | reviewed, oracle-tested |
+| `EXT_texture_webp` | extensions, samples, fuzz | reviewed, oracle-tested |
 
 ## Writing
 
@@ -304,11 +365,11 @@ From `cgltf_write.h`, on branch `port/writer`.
 
 | upstream | zig-cgltf | tests | state |
 | --- | --- | --- | --- |
-| `cgltf_write` into a buffer | `write` to an `std.Io.Writer` | write-samples, write-again, write-fuzz, write-output, write-unit | benchmarked |
-| `cgltf_write` with no buffer (the size) | `write` to an `std.Io.Writer.Discarding` | write-samples, write-refusals | oracle-tested |
-| `cgltf_write_file`, glTF and GLB | `writeFile` | write-files, write-glb, write-refusals | oracle-tested |
-| every object, extension and extras the writer writes | as upstream | write-samples, write-fuzz, write-extras | oracle-tested |
-| `%.9g` through `snprintf` | `number.formatFloat` | floats | oracle-tested |
+| `cgltf_write` into a buffer | `write` to an `std.Io.Writer` | write-samples, write-again, write-fuzz, write-output, write-unit | reviewed, benchmarked |
+| `cgltf_write` with no buffer (the size) | `write` to an `std.Io.Writer.Discarding` | write-samples, write-refusals | reviewed, oracle-tested |
+| `cgltf_write_file`, glTF and GLB | `writeFile` | write-files, write-glb, write-refusals | reviewed, oracle-tested |
+| every object, extension and extras the writer writes | as upstream | write-samples, write-fuzz, write-extras | reviewed, oracle-tested |
+| `%.9g` through `snprintf` | `number.formatFloat` | floats | reviewed, oracle-tested |
 
 ## Left out
 
