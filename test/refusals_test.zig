@@ -51,14 +51,16 @@ test "refusal: accessor reads past the buffer's memory" {
     var gltf = try parseLoaded(
         \\{"asset":{"version":"2.0"},"buffers":[{"byteLength":4,"uri":"data:;base64,AAAAAA=="}],
         \\"bufferViews":[{"buffer":0,"byteLength":4}],
-        \\"accessors":[{"bufferView":0,"componentType":5126,"type":"VEC4","count":4}]}
+        \\"accessors":[{"bufferView":0,"componentType":5126,"type":"VEC4","count":4},
+        \\{"bufferView":0,"componentType":5125,"type":"VEC4","count":4}]}
     );
     defer gltf.deinit();
     const accessor = &gltf.accessors[0];
     var out: [16]f32 = undefined;
     try testing.expectError(error.OutOfBounds, cgltf.readFloat(&gltf, accessor, 0, &out));
+    // cgltf reads a float's uints as 0 without reading them.
     var out_u: [4]u32 = undefined;
-    try testing.expectError(error.OutOfBounds, cgltf.readUint(&gltf, accessor, 3, &out_u));
+    try testing.expectError(error.OutOfBounds, cgltf.readUint(&gltf, &gltf.accessors[1], 3, &out_u));
     var all: [16]f32 = undefined;
     try testing.expectError(error.OutOfBounds, cgltf.unpackFloats(&gltf, accessor, &all));
 }

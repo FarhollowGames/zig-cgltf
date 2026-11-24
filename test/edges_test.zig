@@ -5,6 +5,7 @@
 
 const std = @import("std");
 const cgltf = @import("cgltf");
+const c = @import("c");
 const oracle = @import("oracle.zig");
 const samples = @import("samples.zig");
 
@@ -619,4 +620,83 @@ test "edges: files beside the glTF load as the original's" {
     const backslashed = try std.mem.concatWithSentinel(gpa, u8, &.{ directory, "x\\Box.gltf" }, 0);
     defer gpa.free(backslashed);
     _ = try oracle.expectSame(gpa, io, .{ .bytes = .{ .data = cases[0], .gltf_path = backslashed } }, .{});
+}
+
+const Reads = enum { floats, uints };
+
+/// `json` parsed and loaded by both, then accessor 0's reads of `reads`
+/// on `elements`, and with `.floats` its unpacked floats, none of which
+/// the port may refuse: the original reads no byte past the buffer's
+/// memory there.
+fn expectSameReadsUnrefused(json: []const u8, reads: Reads, elements: []const usize) !void {
+    var options = std.mem.zeroes(c.cgltf_options);
+    var original: [*c]c.cgltf_data = null;
+    try testing.expectEqual(@as(c.cgltf_result, c.cgltf_result_success), c.cgltf_parse(&options, json.ptr, json.len, &original));
+    defer c.cgltf_free(original);
+    try testing.expectEqual(@as(c.cgltf_result, c.cgltf_result_success), c.cgltf_load_buffers(&options, original, null));
+    var gltf = try cgltf.parse(testing.allocator, json, .{});
+    defer gltf.deinit();
+    try cgltf.loadBuffers(&gltf, testing.io, null);
+    const ca = &original.*.accessors[0];
+    const accessor = &gltf.accessors[0];
+    for (elements) |e| {
+        if (reads == .floats) {
+            var expected: [16]f32 = @splat(-7);
+            var actual: [16]f32 = @splat(-7);
+            const ok = try cgltf.readFloat(&gltf, accessor, e, &actual);
+            try testing.expectEqual(c.cgltf_accessor_read_float(ca, e, &expected, 16) != 0, ok);
+            try testing.expectEqual(expected, actual);
+            continue;
+        }
+        var expected_u: [16]u32 = @splat(7);
+        var actual_u: [16]u32 = @splat(7);
+        const ok_u = try cgltf.readUint(&gltf, accessor, e, &actual_u);
+        try testing.expectEqual(c.cgltf_accessor_read_uint(ca, e, &expected_u, 16) != 0, ok_u);
+        try testing.expectEqual(expected_u, actual_u);
+        try testing.expectEqual(c.cgltf_accessor_read_index(ca, e), try cgltf.readIndex(&gltf, accessor, e));
+    }
+    if (reads == .uints) return;
+    var expected: [64]f32 = @splat(-7);
+    var actual: [64]f32 = @splat(-7);
+    const n = @min(cgltf.unpackFloatsCount(accessor), expected.len);
+    const written = try cgltf.unpackFloats(&gltf, accessor, actual[0..n]);
+    try testing.expectEqual(c.cgltf_accessor_unpack_floats(ca, &expected, n), written);
+    try testing.expectEqualSlices(u32, @ptrCast(&expected), @ptrCast(&actual));
+}
+
+test "edges: reads of components the original converts without reading them, past the buffer's memory" {
+    // cgltf reads uints of float components, and floats of normalized
+    // 32-bit unsigned ones, as 0 without reading their bytes, so elements
+    // past the buffer's memory read as zeros there.
+    const layouts = [_]struct { Reads, []const u8 }{
+        .{ .uints,
+        \\"componentType":5126,"type":"VEC4","count":4
+        },
+        .{ .floats,
+        \\"componentType":5125,"normalized":true,"type":"VEC4","count":4
+        },
+        .{ .floats,
+        \\"componentType":5125,"normalized":true,"type":"SCALAR","count":8,"byteOffset":2
+        },
+        .{ .uints,
+        \\"componentType":5126,"type":"VEC3","count":3,"sparse":{"count":1,
+        \\"indices":{"bufferView":0,"componentType":5121},"values":{"bufferView":0,"byteOffset":3}}
+        },
+        .{ .floats,
+        \\"componentType":5125,"normalized":true,"type":"VEC2","count":3,"sparse":{"count":1,
+        \\"indices":{"bufferView":0,"componentType":5121},"values":{"bufferView":0,"byteOffset":3}}
+        },
+    };
+    for (layouts) |entry| {
+        const reads, const layout = entry;
+        const json = try std.fmt.allocPrint(testing.allocator,
+            \\{{"asset":{{"version":"2.0"}},"buffers":[{{"byteLength":4,"uri":"data:;base64,AQIDBA=="}}],
+            \\"bufferViews":[{{"buffer":0,"byteLength":4}}],"accessors":[{{"bufferView":0,{s}}}]}}
+        , .{layout});
+        defer testing.allocator.free(json);
+        expectSameReadsUnrefused(json, reads, &.{ 0, 1, 2, 3 }) catch |err| {
+            std.debug.print("case: {s}\n", .{json});
+            return err;
+        };
+    }
 }

@@ -115,7 +115,7 @@ fn readElementFloats(
 ) void {
     const T = Stored(component_type);
     const n = comptime cgltf.numComponents(t);
-    if (component_type == .invalid) {
+    if (comptime !readsFloatBytes(component_type, normalized)) {
         out.* = @splat(0);
         return;
     }
@@ -156,6 +156,19 @@ fn elementSpan(t: types.Type, component_type: ComponentType) usize {
     return cgltf.numComponents(t) * component_size;
 }
 
+/// Whether cgltf's `cgltf_component_read_float` reads a component's
+/// bytes: it gives 0 without reading them for an invalid type and for a
+/// normalized 32-bit unsigned integer.
+fn readsFloatBytes(component_type: ComponentType, normalized: bool) bool {
+    return component_type != .invalid and !(normalized and component_type == .r_32u);
+}
+
+/// The bytes `elementReadFloat` reads of an element of `accessor`.
+fn floatSpan(accessor: *const Accessor) usize {
+    if (!readsFloatBytes(accessor.component_type, accessor.normalized)) return 0;
+    return elementSpan(accessor.type, accessor.component_type);
+}
+
 /// The bytes `componentReadIndex` reads: none for a type it reads as 0.
 fn indexSize(component_type: ComponentType) usize {
     return switch (component_type) {
@@ -175,7 +188,7 @@ inline fn elementReadFloat(
 ) ReadError!bool {
     const num_components = cgltf.numComponents(accessor.type);
     if (out.len < num_components) return false;
-    const bytes = try bytesAt(memory, offset, elementSpan(accessor.type, accessor.component_type));
+    const bytes = try bytesAt(memory, offset, floatSpan(accessor));
     switch (accessor.component_type) {
         inline else => |component_type| switch (accessor.type) {
             inline else => |t| {
@@ -200,6 +213,9 @@ inline fn elementReadUint(memory: []const u8, offset: usize, accessor: *const Ac
             const num_components = comptime cgltf.numComponents(t);
             if (out.len < num_components) return false;
             switch (accessor.component_type) {
+                // cgltf reads a float or an invalid type as 0, without
+                // reading its bytes.
+                .r_32f, .invalid => @memset(out[0..num_components], 0),
                 inline else => |component_type| {
                     const component_size = comptime cgltf.componentSize(component_type);
                     const bytes = try bytesAt(memory, offset, comptime elementSpan(t, component_type));
@@ -389,10 +405,13 @@ pub fn unpackFloats(gltf: *const Gltf, accessor: *const Accessor, out: []f32) Re
 
     if (accessor.buffer_view) |view| {
         const memory = viewData(gltf, view) orelse return 0;
-        const span = elementSpan(accessor.type, accessor.component_type);
+        const span = floatSpan(accessor);
         if (accessor.component_type == .r_32f and accessor.stride == floats_per_element * 4) {
             const bytes = try bytesAt(memory, accessor.offset, used.len * 4);
             @memcpy(std.mem.sliceAsBytes(used), bytes);
+        } else if (span == 0) {
+            // Each component converts to 0 without being read.
+            @memset(used, 0);
         } else if (used.len > 0 and elementsFit(memory.len, accessor, element_count, span)) {
             unpackElementFloats(accessor, memory, used);
         } else {
