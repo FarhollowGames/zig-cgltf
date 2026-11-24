@@ -202,20 +202,37 @@ inline fn elementReadFloat(
 ) ReadError!bool {
     const num_components = cgltf.numComponents(accessor.type);
     if (out.len < num_components) return false;
-    const bytes = try bytesAt(memory, offset, floatSpan(accessor));
-    switch (accessor.component_type) {
-        inline else => |component_type| switch (accessor.type) {
-            inline else => |t| {
-                const dest = out[0..comptime cgltf.numComponents(t)];
-                if (accessor.normalized) {
-                    readElementFloats(component_type, true, t, bytes, dest);
-                } else {
-                    readElementFloats(component_type, false, t, bytes, dest);
-                }
-            },
+    // One jump for the component type, element type and normalization.
+    const key = (@intFromEnum(accessor.component_type) * type_count + @intFromEnum(accessor.type)) * 2 +
+        @intFromBool(accessor.normalized);
+    switch (key) {
+        inline 0...component_type_count * type_count * 2 - 1 => |k| {
+            const component_type: ComponentType = comptime @enumFromInt(k / 2 / type_count);
+            const t: types.Type = comptime @enumFromInt(k / 2 % type_count);
+            const dest = out[0..comptime cgltf.numComponents(t)];
+            try readElementFloatsAt(component_type, k % 2 == 1, t, memory, offset, dest);
         },
+        else => unreachable,
     }
     return true;
+}
+
+const component_type_count = @typeInfo(ComponentType).@"enum".field_names.len;
+const type_count = @typeInfo(types.Type).@"enum".field_names.len;
+
+/// `readElementFloats` of the element at `offset` in `memory`, checked
+/// against it for the bytes `floatSpan` gives, known at compile time.
+fn readElementFloatsAt(
+    comptime component_type: ComponentType,
+    comptime normalized: bool,
+    comptime t: types.Type,
+    memory: []const u8,
+    offset: usize,
+    out: *[cgltf.numComponents(t)]f32,
+) ReadError!void {
+    const span = comptime if (readsFloatBytes(component_type, normalized)) elementSpan(t, component_type) else 0;
+    const bytes = try bytesAt(memory, offset, span);
+    readElementFloats(component_type, normalized, t, bytes, out);
 }
 
 /// Inline, like `elementReadFloat`, choosing the component and element
