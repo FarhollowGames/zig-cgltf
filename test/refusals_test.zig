@@ -266,6 +266,27 @@ test "refusal: writeFile of extras it refuses leaves the file at the path as it 
     try testing.expectError(error.FileNotFound, cwd.access(testing.io, missing, .{}));
 }
 
+test "writeFile reports a failed write or flush as an IoError, where cgltf reports success" {
+    // A deliberate difference (doc/parity.md): cgltf ignores the results of
+    // `fwrite` and `fclose`. Writing to /dev/full fails at the first flush:
+    // for a short text when the file is flushed, for a long one while the
+    // text is written.
+    if (@import("builtin").os.tag != .linux) return error.SkipZigTest;
+    const gpa = testing.allocator;
+    var long: std.ArrayList(u8) = .empty;
+    defer long.deinit(gpa);
+    try long.appendSlice(gpa, "{\"asset\":{\"version\":\"2.0\"},\"nodes\":[");
+    for (0..1000) |i| try long.print(gpa, "{s}{{\"name\":\"node {d}\"}}", .{ if (i == 0) "" else ",", i });
+    try long.appendSlice(gpa, "]}");
+    for ([_][]const u8{ "{\"asset\":{\"version\":\"2.0\"}}", long.items }) |json| {
+        var gltf = try cgltf.parse(gpa, json, .{});
+        defer gltf.deinit();
+        for ([_]cgltf.FileType{ .gltf, .glb }) |file_type| {
+            try testing.expectError(error.IoError, cgltf.writeFile(&gltf, testing.io, "/dev/full", file_type));
+        }
+    }
+}
+
 fn parseLoadValidate(allocator: std.mem.Allocator, path: [:0]const u8) !void {
     var gltf = try cgltf.parseFile(allocator, testing.io, path, .{});
     defer gltf.deinit();
