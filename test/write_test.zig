@@ -372,3 +372,34 @@ test "write: byte offsets cgltf casts through an int write as the original write
     try testing.expectEqual(@as(usize, 3), std.mem.count(u8, text, "\"byteOffset\": 18446744071562067968,"));
     try testing.expectEqual(@as(usize, 3), std.mem.count(u8, text, "\"byteOffset\": 1,"));
 }
+
+test "write: strings decoded in place to a NUL write up to the NUL, as the original's" {
+    // A string decoded in place keeps its old length in the `Gltf`, as
+    // doc/parity.md says, and a `\u0000` decodes to a NUL there; cgltf's
+    // `%s` stops at it. Names, other strings and attribute names, the last
+    // written as labels.
+    const json =
+        \\{"asset":{"version":"2.0","generator":"g\u0000enerator"},"nodes":[{"name":"a\u0000\"b"}],
+        \\"buffers":[{"byteLength":4}],"bufferViews":[{"buffer":0,"byteLength":4}],
+        \\"accessors":[{"bufferView":0,"componentType":5126,"count":1,"type":"SCALAR"}],
+        \\"meshes":[{"primitives":[{"attributes":{"_A\u0000B":0}}]}]}
+    ;
+    const gpa = testing.allocator;
+    var gltf = try cgltf.parse(gpa, json, .{});
+    defer gltf.deinit();
+    var options = std.mem.zeroes(c.cgltf_options);
+    var original: [*c]c.cgltf_data = null;
+    try testing.expect(c.cgltf_parse(&options, json.ptr, json.len, &original) == c.cgltf_result_success);
+    defer c.cgltf_free(original);
+    _ = c.cgltf_decode_string(original.*.asset.generator);
+    _ = try cgltf.decodeString(gltf.asset.generator.?);
+    _ = c.cgltf_decode_string(original.*.nodes[0].name);
+    _ = try cgltf.decodeString(gltf.nodes[0].name.?);
+    _ = c.cgltf_decode_string(original.*.meshes[0].primitives[0].attributes[0].name);
+    _ = try cgltf.decodeString(gltf.meshes[0].primitives[0].attributes[0].name);
+    const text = try expectSameText(gpa, original, &gltf);
+    defer gpa.free(text);
+    try testing.expect(std.mem.indexOf(u8, text, "\"generator\": \"g\",") != null);
+    try testing.expect(std.mem.indexOf(u8, text, "\"name\": \"a\"") != null);
+    try testing.expect(std.mem.indexOf(u8, text, "\"_A\": 0") != null);
+}
