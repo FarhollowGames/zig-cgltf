@@ -281,3 +281,52 @@ test "write: extras on every object write as the original writes them" {
     // Every one of the 23 extras is in the text.
     try testing.expectEqual(@as(usize, 23), std.mem.count(u8, text, "\"extras\": "));
 }
+
+/// Both sides' text for `json`, which both must parse, must be the same.
+fn expectSameTextOf(json: []const u8) ![]u8 {
+    const gpa = testing.allocator;
+    var gltf = try cgltf.parse(gpa, json, .{});
+    defer gltf.deinit();
+    var options = std.mem.zeroes(c.cgltf_options);
+    var original: [*c]c.cgltf_data = null;
+    try testing.expect(c.cgltf_parse(&options, json.ptr, json.len, &original) == c.cgltf_result_success);
+    defer c.cgltf_free(original);
+    return expectSameText(gpa, original, &gltf);
+}
+
+test "write: every property of every material extension writes as the original writes it" {
+    // The sample models and the fuzz leave some of them at their defaults,
+    // such as the specular-glossiness diffuse factor.
+    const view = "{\"index\":0,\"texCoord\":1,\"extensions\":{\"KHR_texture_transform\":{\"offset\":[0.5,0.25],\"rotation\":0.125,\"scale\":[2,3],\"texCoord\":2}}}";
+    const json = "{\"asset\":{\"version\":\"2.0\"},\"images\":[{\"uri\":\"a.png\"}],\"textures\":[{\"source\":0}],\"materials\":[{" ++
+        "\"name\":\"every\",\"alphaMode\":\"MASK\",\"alphaCutoff\":0.25,\"doubleSided\":true," ++
+        "\"pbrMetallicRoughness\":{\"baseColorFactor\":[0.1,0.2,0.3,0.4],\"metallicFactor\":0.5,\"roughnessFactor\":0.6," ++
+        "\"baseColorTexture\":" ++ view ++ ",\"metallicRoughnessTexture\":" ++ view ++ "}," ++
+        "\"normalTexture\":{\"index\":0,\"texCoord\":1,\"scale\":0.7},\"occlusionTexture\":{\"index\":0,\"strength\":0.8}," ++
+        "\"emissiveTexture\":" ++ view ++ ",\"emissiveFactor\":[0.1,0.2,0.3],\"extensions\":{" ++
+        "\"KHR_materials_clearcoat\":{\"clearcoatFactor\":0.1,\"clearcoatRoughnessFactor\":0.2,\"clearcoatTexture\":" ++ view ++
+        ",\"clearcoatRoughnessTexture\":" ++ view ++ ",\"clearcoatNormalTexture\":{\"index\":0,\"scale\":0.3}}," ++
+        "\"KHR_materials_ior\":{\"ior\":1.25}," ++
+        "\"KHR_materials_specular\":{\"specularFactor\":0.3,\"specularColorFactor\":[0.4,0.5,0.6],\"specularTexture\":" ++ view ++
+        ",\"specularColorTexture\":" ++ view ++ "}," ++
+        "\"KHR_materials_transmission\":{\"transmissionFactor\":0.4,\"transmissionTexture\":" ++ view ++ "}," ++
+        "\"KHR_materials_volume\":{\"thicknessFactor\":0.5,\"thicknessTexture\":" ++ view ++
+        ",\"attenuationDistance\":2.5,\"attenuationColor\":[0.7,0.8,0.9]}," ++
+        "\"KHR_materials_sheen\":{\"sheenColorFactor\":[0.1,0.2,0.3],\"sheenRoughnessFactor\":0.4,\"sheenColorTexture\":" ++ view ++
+        ",\"sheenRoughnessTexture\":" ++ view ++ "}," ++
+        "\"KHR_materials_pbrSpecularGlossiness\":{\"diffuseFactor\":[0.1,0.2,0.3,0.4],\"specularFactor\":[0.5,0.6,0.7],\"glossinessFactor\":0.8," ++
+        "\"diffuseTexture\":" ++ view ++ ",\"specularGlossinessTexture\":" ++ view ++ "}," ++
+        "\"KHR_materials_unlit\":{}," ++
+        "\"KHR_materials_emissive_strength\":{\"emissiveStrength\":4}," ++
+        "\"KHR_materials_iridescence\":{\"iridescenceFactor\":0.5,\"iridescenceIor\":1.5,\"iridescenceThicknessMinimum\":50," ++
+        "\"iridescenceThicknessMaximum\":500,\"iridescenceTexture\":" ++ view ++ ",\"iridescenceThicknessTexture\":" ++ view ++ "}," ++
+        "\"KHR_materials_diffuse_transmission\":{\"diffuseTransmissionFactor\":0.25,\"diffuseTransmissionColorFactor\":[0.5,0.6,0.7]," ++
+        "\"diffuseTransmissionTexture\":" ++ view ++ ",\"diffuseTransmissionColorTexture\":" ++ view ++ "}," ++
+        "\"KHR_materials_anisotropy\":{\"anisotropyStrength\":0.5,\"anisotropyRotation\":0.75,\"anisotropyTexture\":" ++ view ++ "}," ++
+        "\"KHR_materials_dispersion\":{\"dispersion\":0.1}}}]}";
+    const text = try expectSameTextOf(json);
+    defer testing.allocator.free(text);
+    // The 18 texture views given a transform are in the text with it.
+    try testing.expectEqual(@as(usize, 18), std.mem.count(u8, text, "\"KHR_texture_transform\": {"));
+    try testing.expect(std.mem.indexOf(u8, text, "\"diffuseFactor\": [0.100000001, 0.200000003, 0.300000012, 0.400000006]") != null);
+}
