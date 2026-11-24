@@ -562,6 +562,13 @@ test "edges: buffers from data URIs, files and the BIN chunk load as the origina
         ,
         \\,"buffers":[{"byteLength":3,"uri":"data:;base64"}]
         ,
+        // A comma before the seventh character, where ";base64" cannot fit.
+        \\,"buffers":[{"byteLength":3,"uri":"data:,AAEC"}]
+        ,
+        \\,"buffers":[{"byteLength":3,"uri":"data:x,AAEC"}]
+        ,
+        \\,"buffers":[{"byteLength":3,"uri":"data:;base6,AAEC"}]
+        ,
         \\,"buffers":[{"byteLength":3,"uri":"data:x;base64,AAEC,AAEC"}]
         ,
         \\,"buffers":[{"byteLength":3,"uri":"http://example.com/a.bin"}]
