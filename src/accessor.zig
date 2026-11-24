@@ -238,22 +238,38 @@ fn readElementFloatsAt(
 /// Inline, like `elementReadFloat`, choosing the component and element
 /// type once.
 inline fn elementReadUint(memory: []const u8, offset: usize, accessor: *const Accessor, out: []u32) ReadError!bool {
-    switch (accessor.type) {
-        .mat2, .mat3, .mat4 => return false,
-        inline else => |t| {
-            const num_components = comptime cgltf.numComponents(t);
-            if (out.len < num_components) return false;
-            switch (accessor.component_type) {
-                // cgltf reads a float or an invalid type as 0, without
-                // reading its bytes.
-                .r_32f, .invalid => @memset(out[0..num_components], 0),
-                inline else => |component_type| {
-                    const component_size = comptime cgltf.componentSize(component_type);
-                    const bytes = try bytesAt(memory, offset, comptime elementSpan(t, component_type));
-                    inline for (out[0..num_components], 0..) |*value, i| {
-                        value.* = componentReadUint(bytes[component_size * i ..], component_type);
-                    }
-                },
+    // One jump for the component type and element type.
+    const key = @intFromEnum(accessor.component_type) * type_count + @intFromEnum(accessor.type);
+    switch (key) {
+        inline 0...component_type_count * type_count - 1 => |k| {
+            const component_type: ComponentType = comptime @enumFromInt(k / type_count);
+            const t: types.Type = comptime @enumFromInt(k % type_count);
+            return readElementUintAt(component_type, t, memory, offset, out);
+        },
+        else => unreachable,
+    }
+}
+
+/// `elementReadUint` for an element of type `t` stored as `component_type`.
+fn readElementUintAt(
+    comptime component_type: ComponentType,
+    comptime t: types.Type,
+    memory: []const u8,
+    offset: usize,
+    out: []u32,
+) ReadError!bool {
+    if (t == .mat2 or t == .mat3 or t == .mat4) return false;
+    const num_components = comptime cgltf.numComponents(t);
+    if (out.len < num_components) return false;
+    switch (component_type) {
+        // cgltf reads a float or an invalid type as 0, without reading its
+        // bytes.
+        .r_32f, .invalid => @memset(out[0..num_components], 0),
+        else => {
+            const component_size = comptime cgltf.componentSize(component_type);
+            const bytes = try bytesAt(memory, offset, comptime elementSpan(t, component_type));
+            inline for (out[0..num_components], 0..) |*value, i| {
+                value.* = componentReadUint(bytes[component_size * i ..], component_type);
             }
         },
     }
