@@ -54,8 +54,8 @@ World transforms is even with cgltf on this machine (1.18 on the earlier machine
 Tests: `zig build test` runs 81, all passing in ReleaseSafe: 17 unit tests, 46 oracle tests
 and 18 tests of refusals, failed allocations and a custom reader.
 
-Open for the author: the three fixes change results after `v0.1.0`; release is the author's
-call.
+Released as `v0.1.1`, merged into `main` at the author's request: the three fixes change
+results after `v0.1.0`.
 
 ## Release candidate
 
