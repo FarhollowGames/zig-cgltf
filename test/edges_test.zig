@@ -622,13 +622,14 @@ test "edges: files beside the glTF load as the original's" {
     _ = try oracle.expectSame(gpa, io, .{ .bytes = .{ .data = cases[0], .gltf_path = backslashed } }, .{});
 }
 
-const Reads = enum { floats, uints };
+/// Which reads `expectSameReadsUnrefused` makes: floats, and the floats
+/// unpacked; uints and the index; or all three of one element.
+const Reads = enum { floats, uints, elements };
 
-/// `json` parsed and loaded by both, then accessor 0's reads of `reads`
-/// on `elements`, and with `.floats` its unpacked floats, none of which
-/// the port may refuse: the original reads no byte past the buffer's
-/// memory there.
-fn expectSameReadsUnrefused(json: []const u8, reads: Reads, elements: []const usize) !void {
+/// `json` parsed and loaded by both, then the reads `reads` names of
+/// accessor `a` on `elements`, none of which the port may refuse: the
+/// original reads no byte past the buffer's memory there.
+fn expectSameReadsUnrefused(json: []const u8, a: usize, reads: Reads, elements: []const usize) !void {
     var options = std.mem.zeroes(c.cgltf_options);
     var original: [*c]c.cgltf_data = null;
     try testing.expectEqual(@as(c.cgltf_result, c.cgltf_result_success), c.cgltf_parse(&options, json.ptr, json.len, &original));
@@ -637,16 +638,16 @@ fn expectSameReadsUnrefused(json: []const u8, reads: Reads, elements: []const us
     var gltf = try cgltf.parse(testing.allocator, json, .{});
     defer gltf.deinit();
     try cgltf.loadBuffers(&gltf, testing.io, null);
-    const ca = &original.*.accessors[0];
-    const accessor = &gltf.accessors[0];
+    const ca = &original.*.accessors[a];
+    const accessor = &gltf.accessors[a];
     for (elements) |e| {
-        if (reads == .floats) {
+        if (reads != .uints) {
             var expected: [16]f32 = @splat(-7);
             var actual: [16]f32 = @splat(-7);
             const ok = try cgltf.readFloat(&gltf, accessor, e, &actual);
             try testing.expectEqual(c.cgltf_accessor_read_float(ca, e, &expected, 16) != 0, ok);
             try testing.expectEqual(expected, actual);
-            continue;
+            if (reads == .floats) continue;
         }
         var expected_u: [16]u32 = @splat(7);
         var actual_u: [16]u32 = @splat(7);
@@ -655,7 +656,7 @@ fn expectSameReadsUnrefused(json: []const u8, reads: Reads, elements: []const us
         try testing.expectEqual(expected_u, actual_u);
         try testing.expectEqual(c.cgltf_accessor_read_index(ca, e), try cgltf.readIndex(&gltf, accessor, e));
     }
-    if (reads == .uints) return;
+    if (reads != .floats) return;
     var expected: [64]f32 = @splat(-7);
     var actual: [64]f32 = @splat(-7);
     const n = @min(cgltf.unpackFloatsCount(accessor), expected.len);
@@ -694,9 +695,29 @@ test "edges: reads of components the original converts without reading them, pas
             \\"bufferViews":[{{"buffer":0,"byteLength":4}}],"accessors":[{{"bufferView":0,{s}}}]}}
         , .{layout});
         defer testing.allocator.free(json);
-        expectSameReadsUnrefused(json, reads, &.{ 0, 1, 2, 3 }) catch |err| {
+        expectSameReadsUnrefused(json, 0, reads, &.{ 0, 1, 2, 3 }) catch |err| {
             std.debug.print("case: {s}\n", .{json});
             return err;
         };
     }
+}
+
+test "edges: element offsets that wrap to before the view read the buffer there, as the original's" {
+    // cgltf adds the view's offset, the accessor's and the stride times
+    // the element to the buffer's pointer, wrapping, so an element whose
+    // offset wraps reads the bytes of the buffer before the view.
+    const json =
+        \\{"asset":{"version":"2.0"},"buffers":[{"byteLength":8,"uri":"data:;base64,AQIDBAUGBwg="}],
+        \\"bufferViews":[{"buffer":0,"byteOffset":4,"byteLength":4},
+        \\{"buffer":0,"byteOffset":4,"byteLength":4,"byteStride":9223372036854775807}],
+        \\"accessors":[{"bufferView":0,"componentType":5126,"type":"SCALAR","count":1},
+        \\{"bufferView":0,"componentType":5121,"type":"SCALAR","count":1},
+        \\{"bufferView":0,"componentType":5123,"type":"VEC2","count":1},
+        \\{"bufferView":1,"componentType":5121,"type":"VEC2","count":3}]}
+    ;
+    const max = std.math.maxInt(usize);
+    try expectSameReadsUnrefused(json, 0, .elements, &.{ max / 4, 0 });
+    try expectSameReadsUnrefused(json, 1, .elements, &.{ max, max - 3, 0 });
+    try expectSameReadsUnrefused(json, 2, .elements, &.{ max / 4, 0 });
+    try expectSameReadsUnrefused(json, 3, .elements, &.{ 0, 2 });
 }
