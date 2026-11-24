@@ -230,6 +230,42 @@ test "refusal: writing into an output too small for the text" {
     try cgltf.write(&gltf, &out);
 }
 
+test "refusal: writeFile of extras it refuses leaves the file at the path as it was" {
+    // The JSON is counted before the file is created, so a refused write
+    // neither creates nor truncates the file.
+    var json = "{\"asset\":{\"version\":\"2.0\"},\"extras\":{\"a\":1}}".*;
+    var gltf = try cgltf.parse(testing.allocator, &json, .{});
+    defer gltf.deinit();
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const gpa = testing.allocator;
+    const path = try std.fs.path.join(gpa, &.{ ".zig-cache", "tmp", &tmp.sub_path, "a" });
+    defer gpa.free(path);
+    const cwd = std.Io.Dir.cwd();
+    var data = "{\"a\":\"b\x00\"}".*;
+    for ([_]cgltf.FileType{ .gltf, .glb }) |file_type| {
+        try cwd.writeFile(testing.io, .{ .sub_path = path, .data = "kept" });
+        gltf.extras.data = &data;
+        try testing.expectError(error.InvalidExtras, cgltf.writeFile(&gltf, testing.io, path, file_type));
+        gltf.extras.data = null;
+        json[gltf.extras.start_offset + 1] = 0;
+        try testing.expectError(error.InvalidExtras, cgltf.writeFile(&gltf, testing.io, path, file_type));
+        json[gltf.extras.start_offset + 1] = '"';
+        const end_offset = gltf.extras.end_offset;
+        gltf.extras.end_offset = json.len + 1;
+        try testing.expectError(error.OutOfBounds, cgltf.writeFile(&gltf, testing.io, path, file_type));
+        gltf.extras.end_offset = end_offset;
+        const kept = try cwd.readFileAlloc(testing.io, path, gpa, .unlimited);
+        defer gpa.free(kept);
+        try testing.expectEqualStrings("kept", kept);
+    }
+    const missing = try std.fs.path.join(gpa, &.{ ".zig-cache", "tmp", &tmp.sub_path, "missing" });
+    defer gpa.free(missing);
+    gltf.extras.data = &data;
+    try testing.expectError(error.InvalidExtras, cgltf.writeFile(&gltf, testing.io, missing, .gltf));
+    try testing.expectError(error.FileNotFound, cwd.access(testing.io, missing, .{}));
+}
+
 fn parseLoadValidate(allocator: std.mem.Allocator, path: [:0]const u8) !void {
     var gltf = try cgltf.parseFile(allocator, testing.io, path, .{});
     defer gltf.deinit();
