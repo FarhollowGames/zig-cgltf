@@ -610,4 +610,10 @@ test "edges: files beside the glTF load as the original's" {
             return err;
         };
     }
+    // A backslash after the last slash ends the directory, as on Windows:
+    // the buffer is looked for in `glTF/x\`, where there is none.
+    const directory = box[0 .. std.mem.lastIndexOfScalar(u8, box, '/').? + 1];
+    const backslashed = try std.mem.concatWithSentinel(gpa, u8, &.{ directory, "x\\Box.gltf" }, 0);
+    defer gpa.free(backslashed);
+    _ = try oracle.expectSame(gpa, io, .{ .bytes = .{ .data = cases[0], .gltf_path = backslashed } }, .{});
 }
