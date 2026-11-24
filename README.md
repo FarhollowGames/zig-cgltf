@@ -138,8 +138,8 @@ Nothing: every function of `cgltf.h` and `cgltf_write.h` is ported, and
 
 ## Tests
 
-`zig build test` runs 69 tests: 17 unit tests and 52 tests that build cgltf
-from `reference/`. 36 of the 52 run cgltf and the port on the same inputs
+`zig build test` runs 81 tests: 17 unit tests and 64 tests that build cgltf
+from `reference/`. 46 of the 64 run cgltf and the port on the same inputs
 (every Khronos sample model, hand-made edge cases and 13,000 fuzzed files)
 and compare every field of the result, every string byte, every reference
 as an index, every float as bits, and every byte of the text and files

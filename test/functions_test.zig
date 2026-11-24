@@ -49,6 +49,16 @@ test "numbers: hand-picked texts convert as the C library converts them" {
         "1e",             "1e+",            "1E5",             "1.5e3x",         "0x1A",          "0X1a",
         "-0x10",          "0x",             "0x.",             "0x.8",           "0x1p4",         "0x1P-4",
         "0x1p",           "0x1.8p1",        "0x1.fffffffffffff8p0", "nan",       "NaN",           "-nan",
+        // Hexadecimal floats with more digits than a double holds: ties,
+        // ties with a nonzero digit far after them, subnormals, overflow.
+        "0xA000bF4F10D086e0000F500E480000", "0x1.00000000000008p0", "0x1.00000000000018p0",
+        "0x1.000000000000080000000000000001p0", "0x1.00000000000007ffffffffffffffffp0",
+        "0x10000000000000800000000000000000", "0x10000000000000800000000000000001",
+        "0x0.00000000000000000000000000000001p0", "0x000000000000000000000000000001.8p0",
+        "0x1p-1074",      "0x1p-1075",      "0x1.0000000000000000001p-1075", "0x1p-1076",
+        "0x1.fffffffffffffp-1023", "0x1.fffffffffffff8p-1023", "0x1.fffffffffffff8p1023",
+        "0x1.fffffffffffff7ffffffffffp1023", "0x1p99999999999999999999", "0x1p-99999999999999999999",
+        "-0x1p-1080",     "0x.000000000000000000000000000000000000000001p200", "0x1.000001000000000000001p0",
         "nan(",           "nan()",          "nan(1)",          "nan(0x10)",      "nan(010)",      "nan(z)",
         "nan(12_3)",      "nan(0xfffffffffffffffff)", "nan(99999999999999999999)", "inf", "-inf", "INFINITY",
         "infinit",        "infinityx",      "1e308",           "1e309",          "-1e309",        "1e-308",
@@ -86,6 +96,44 @@ test "numbers: fuzz: random floats print and read back as the C library reads th
                 else => try std.fmt.bufPrint(&buffer, "{x}", .{value}),
             };
             try expectSameNumber(text);
+        }
+    }.case);
+}
+
+test "numbers: fuzz: long decimal and hexadecimal floats convert as the C library converts them" {
+    try fuzz.run("long numbers", 20000, struct {
+        fn case(random: std.Random) !void {
+            var buffer: [127]u8 = undefined;
+            var len: usize = 0;
+            const hex = random.boolean();
+            if (random.uintLessThan(u8, 4) == 0) {
+                buffer[len] = '-';
+                len += 1;
+            }
+            if (hex) {
+                @memcpy(buffer[len..][0..2], "0x");
+                len += 2;
+            }
+            const digits = if (hex) "0123456789abcdefABCDEF" else "0123456789";
+            const int_digits = random.uintLessThan(usize, 40);
+            for (0..int_digits) |_| {
+                buffer[len] = if (random.uintLessThan(u8, 3) == 0) '0' else digits[random.uintLessThan(usize, digits.len)];
+                len += 1;
+            }
+            if (random.boolean()) {
+                buffer[len] = '.';
+                len += 1;
+                const frac = random.uintLessThan(usize, 40);
+                for (0..frac) |_| {
+                    buffer[len] = if (random.uintLessThan(u8, 3) == 0) '0' else digits[random.uintLessThan(usize, digits.len)];
+                    len += 1;
+                }
+            }
+            if (random.boolean()) {
+                const e = std.fmt.bufPrint(buffer[len..], "{s}{d}", .{ if (hex) "p" else "e", random.intRangeAtMost(i32, -1200, 1200) }) catch unreachable;
+                len += e.len;
+            }
+            try expectSameNumber(buffer[0..len]);
         }
     }.case);
 }
@@ -252,6 +300,24 @@ test "base64: fuzz: random texts decode as the original decodes them" {
             try expectSameBase64(random.uintLessThan(usize, len * 3 / 4 + 8), buffer[0..len :0]);
         }
     }.case);
+}
+
+test "base64: every byte at every lane of a whole chunk decodes as the original decodes it" {
+    // The 64-character decoder classifies characters by ranges, so the
+    // bytes beside each range ('@', '[', '`', '{', '/', ':', ',', ...) and
+    // every byte above 127 are checked in each lane, with a chunk before
+    // and a tail after it.
+    var text: [160:0]u8 = undefined;
+    for (&text, 0..) |*b, i| b.* = std.base64.standard_alphabet_chars[(i * 7) % 64];
+    text[text.len] = 0;
+    for (64..128) |lane| {
+        for (1..256) |value| {
+            const kept = text[lane];
+            text[lane] = @intCast(value);
+            try expectSameBase64(120, &text);
+            text[lane] = kept;
+        }
+    }
 }
 
 test "sizes: components, component sizes and element sizes match for every type" {

@@ -5,6 +5,7 @@
 
 const std = @import("std");
 const cgltf = @import("cgltf");
+const c = @import("c");
 const oracle = @import("oracle.zig");
 const samples = @import("samples.zig");
 
@@ -146,6 +147,19 @@ test "edges: JSON the tokenizer and the parser refuse, and glTF 1.0" {
         "{\"a\":\"\\u12g4\"}",
         "{\"a\":\"\x01\"}",
         "{\"a\":tru}         ",
+        // DEL and a byte above it inside a primitive.
+        "{\"a\":1\x7f}        ",
+        "{\"a\":1\x80}        ",
+        "{\"a\":[1\x7f]}       ",
+        // Booleans are true only for the text `true`, of any token.
+        "{\"materials\":[{\"doubleSided\":truex},{\"doubleSided\":\"true\"},{\"doubleSided\":true}]," ++
+            "\"accessors\":[{\"normalized\":true1},{\"normalized\":\"true\"},{\"normalized\":[true]}]}",
+        // A hexadecimal float past a double's digits, whose last digit
+        // rounds the double up and so the float above the tie.
+        "{\"nodes\":[{\"translation\":[0x1.000001000000080000000000000001p0,0x1.000001000000080000000000000000p0,0]}]}",
+        // A backslash as the text's last byte, inside a string.
+        "{\"assets\":\"\\",
+        "{\"assets\":\"ab\\",
         "{\"a\":1}x",
         "{\"a\":1}\x00garbage after a NUL",
         "{\"a\":1\x00}",
@@ -552,6 +566,13 @@ test "edges: buffers from data URIs, files and the BIN chunk load as the origina
         ,
         \\,"buffers":[{"byteLength":3,"uri":"data:;base64"}]
         ,
+        // A comma before the seventh character, where ";base64" cannot fit.
+        \\,"buffers":[{"byteLength":3,"uri":"data:,AAEC"}]
+        ,
+        \\,"buffers":[{"byteLength":3,"uri":"data:x,AAEC"}]
+        ,
+        \\,"buffers":[{"byteLength":3,"uri":"data:;base6,AAEC"}]
+        ,
         \\,"buffers":[{"byteLength":3,"uri":"data:x;base64,AAEC,AAEC"}]
         ,
         \\,"buffers":[{"byteLength":3,"uri":"http://example.com/a.bin"}]
@@ -592,5 +613,138 @@ test "edges: files beside the glTF load as the original's" {
             std.debug.print("case: {s}\n", .{case});
             return err;
         };
+    }
+    // A backslash after the last slash ends the directory, as on Windows:
+    // the buffer is looked for in `glTF/x\`, where there is none.
+    const directory = box[0 .. std.mem.lastIndexOfScalar(u8, box, '/').? + 1];
+    const backslashed = try std.mem.concatWithSentinel(gpa, u8, &.{ directory, "x\\Box.gltf" }, 0);
+    defer gpa.free(backslashed);
+    _ = try oracle.expectSame(gpa, io, .{ .bytes = .{ .data = cases[0], .gltf_path = backslashed } }, .{});
+}
+
+/// Which reads `expectSameReadsUnrefused` makes: floats, and the floats
+/// unpacked; uints and the index; or all three of one element.
+const Reads = enum { floats, uints, elements };
+
+/// `json` parsed and loaded by both, then the reads `reads` names of
+/// accessor `a` on `elements`, none of which the port may refuse: the
+/// original reads no byte past the buffer's memory there.
+fn expectSameReadsUnrefused(json: []const u8, a: usize, reads: Reads, elements: []const usize) !void {
+    var options = std.mem.zeroes(c.cgltf_options);
+    var original: [*c]c.cgltf_data = null;
+    try testing.expectEqual(@as(c.cgltf_result, c.cgltf_result_success), c.cgltf_parse(&options, json.ptr, json.len, &original));
+    defer c.cgltf_free(original);
+    try testing.expectEqual(@as(c.cgltf_result, c.cgltf_result_success), c.cgltf_load_buffers(&options, original, null));
+    var gltf = try cgltf.parse(testing.allocator, json, .{});
+    defer gltf.deinit();
+    try cgltf.loadBuffers(&gltf, testing.io, null);
+    const ca = &original.*.accessors[a];
+    const accessor = &gltf.accessors[a];
+    for (elements) |e| {
+        if (reads != .uints) {
+            var expected: [16]f32 = @splat(-7);
+            var actual: [16]f32 = @splat(-7);
+            const ok = try cgltf.readFloat(&gltf, accessor, e, &actual);
+            try testing.expectEqual(c.cgltf_accessor_read_float(ca, e, &expected, 16) != 0, ok);
+            try testing.expectEqual(expected, actual);
+            if (reads == .floats) continue;
+        }
+        var expected_u: [16]u32 = @splat(7);
+        var actual_u: [16]u32 = @splat(7);
+        const ok_u = try cgltf.readUint(&gltf, accessor, e, &actual_u);
+        try testing.expectEqual(c.cgltf_accessor_read_uint(ca, e, &expected_u, 16) != 0, ok_u);
+        try testing.expectEqual(expected_u, actual_u);
+        try testing.expectEqual(c.cgltf_accessor_read_index(ca, e), try cgltf.readIndex(&gltf, accessor, e));
+    }
+    if (reads != .floats) return;
+    var expected: [64]f32 = @splat(-7);
+    var actual: [64]f32 = @splat(-7);
+    const n = @min(cgltf.unpackFloatsCount(accessor), expected.len);
+    const written = try cgltf.unpackFloats(&gltf, accessor, actual[0..n]);
+    try testing.expectEqual(c.cgltf_accessor_unpack_floats(ca, &expected, n), written);
+    try testing.expectEqualSlices(u32, @ptrCast(&expected), @ptrCast(&actual));
+}
+
+test "edges: reads of components the original converts without reading them, past the buffer's memory" {
+    // cgltf reads uints of float components, and floats of normalized
+    // 32-bit unsigned ones, as 0 without reading their bytes, so elements
+    // past the buffer's memory read as zeros there.
+    const layouts = [_]struct { Reads, []const u8 }{
+        .{ .uints,
+        \\"componentType":5126,"type":"VEC4","count":4
+        },
+        .{ .floats,
+        \\"componentType":5125,"normalized":true,"type":"VEC4","count":4
+        },
+        .{ .floats,
+        \\"componentType":5125,"normalized":true,"type":"SCALAR","count":8,"byteOffset":2
+        },
+        .{ .uints,
+        \\"componentType":5126,"type":"VEC3","count":3,"sparse":{"count":1,
+        \\"indices":{"bufferView":0,"componentType":5121},"values":{"bufferView":0,"byteOffset":3}}
+        },
+        .{ .floats,
+        \\"componentType":5125,"normalized":true,"type":"VEC2","count":3,"sparse":{"count":1,
+        \\"indices":{"bufferView":0,"componentType":5121},"values":{"bufferView":0,"byteOffset":3}}
+        },
+    };
+    for (layouts) |entry| {
+        const reads, const layout = entry;
+        const json = try std.fmt.allocPrint(testing.allocator,
+            \\{{"asset":{{"version":"2.0"}},"buffers":[{{"byteLength":4,"uri":"data:;base64,AQIDBA=="}}],
+            \\"bufferViews":[{{"buffer":0,"byteLength":4}}],"accessors":[{{"bufferView":0,{s}}}]}}
+        , .{layout});
+        defer testing.allocator.free(json);
+        expectSameReadsUnrefused(json, 0, reads, &.{ 0, 1, 2, 3 }) catch |err| {
+            std.debug.print("case: {s}\n", .{json});
+            return err;
+        };
+    }
+}
+
+test "edges: element offsets that wrap to before the view read the buffer there, as the original's" {
+    // cgltf adds the view's offset, the accessor's and the stride times
+    // the element to the buffer's pointer, wrapping, so an element whose
+    // offset wraps reads the bytes of the buffer before the view.
+    const json =
+        \\{"asset":{"version":"2.0"},"buffers":[{"byteLength":8,"uri":"data:;base64,AQIDBAUGBwg="}],
+        \\"bufferViews":[{"buffer":0,"byteOffset":4,"byteLength":4},
+        \\{"buffer":0,"byteOffset":4,"byteLength":4,"byteStride":9223372036854775807}],
+        \\"accessors":[{"bufferView":0,"componentType":5126,"type":"SCALAR","count":1},
+        \\{"bufferView":0,"componentType":5121,"type":"SCALAR","count":1},
+        \\{"bufferView":0,"componentType":5123,"type":"VEC2","count":1},
+        \\{"bufferView":1,"componentType":5121,"type":"VEC2","count":3}]}
+    ;
+    const max = std.math.maxInt(usize);
+    try expectSameReadsUnrefused(json, 0, .elements, &.{ max / 4, 0 });
+    try expectSameReadsUnrefused(json, 1, .elements, &.{ max, max - 3, 0 });
+    try expectSameReadsUnrefused(json, 2, .elements, &.{ max / 4, 0 });
+    try expectSameReadsUnrefused(json, 3, .elements, &.{ 0, 2 });
+}
+
+test "edges: long loops of parents, with chains leading into them, in shuffled order, validate as the original's" {
+    // Loops longer than the walks of a few steps the random trees give,
+    // so that a loop is found however many steps it takes to go round.
+    const gpa = testing.allocator;
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(gpa);
+    var parents: [300]usize = undefined;
+    var order: [parents.len]usize = undefined;
+    var prng: std.Random.DefaultPrng = .init(0x51c0de);
+    const random = prng.random();
+    for ([_]usize{ 2, 3, 7, 8, 9, 15, 16, 17, 31, 33, 64, 65, 100, 127, 129, 200, 255, 257, 299 }) |length| {
+        for (0..3) |_| {
+            const n = random.intRangeAtMost(usize, length, parents.len);
+            for (order[0..n], 0..) |*o, k| o.* = k;
+            random.shuffle(usize, order[0..n]);
+            // The loop goes round the first `length` of the order; each
+            // node after them hangs from an earlier one, so the chains
+            // lead into the loop.
+            for (0..length) |k| parents[order[k]] = order[(k + 1) % length];
+            for (length..n) |k| parents[order[k]] = order[random.uintLessThan(usize, k)];
+            out.clearRetainingCapacity();
+            try nodesWithParents(&out, gpa, parents[0..n]);
+            try expectSameJson(out.items);
+        }
     }
 }

@@ -177,8 +177,98 @@ pub fn strtod(text: []const u8) f64 {
             end = k;
         }
     }
-    const magnitude = std.fmt.parseFloat(f64, rest[0..end]) catch unreachable;
+    const magnitude = if (hex)
+        hexMagnitude(rest[2..end])
+    else
+        std.fmt.parseFloat(f64, rest[0..end]) catch unreachable;
     return if (negative) -magnitude else magnitude;
+}
+
+/// The value of hexadecimal digits with an optional point and `p`
+/// exponent, not all zero, rounded to nearest, ties to even, as glibc
+/// rounds it. std's parser drops digits past the sixteenth without
+/// rounding on them.
+fn hexMagnitude(text: []const u8) f64 {
+    // The first 16 significant digits, whether any later one is nonzero,
+    // and the power of two the kept digits are scaled by.
+    var mantissa: u64 = 0;
+    var kept: usize = 0;
+    var sticky = false;
+    var exponent: i64 = 0;
+    var after_point = false;
+    var i: usize = 0;
+    while (i < text.len) : (i += 1) {
+        const c = text[i];
+        if (c == '.') {
+            after_point = true;
+            continue;
+        }
+        if (!isHexDigit(c)) break;
+        const digit = hexValue(c);
+        if (kept < 16) {
+            if (kept > 0 or digit != 0) {
+                mantissa = mantissa << 4 | digit;
+                kept += 1;
+            }
+            if (after_point) exponent -= 4;
+        } else {
+            sticky = sticky or digit != 0;
+            if (!after_point) exponent += 4;
+        }
+    }
+    if (i < text.len) {
+        // A `p` exponent with digits, as the caller found; saturated far
+        // past any double.
+        i += 1;
+        var exponent_negative = false;
+        if (text[i] == '-' or text[i] == '+') {
+            exponent_negative = text[i] == '-';
+            i += 1;
+        }
+        var power: i64 = 0;
+        while (i < text.len) : (i += 1) {
+            power = @min(power * 10 + (text[i] - '0'), 1 << 32);
+        }
+        exponent += if (exponent_negative) -power else power;
+    }
+
+    // The value is mantissa * 2^exponent; with the mantissa's top bit at
+    // bit 63, its leading bit's power of two is `top`.
+    const shift: u6 = @intCast(@clz(mantissa));
+    mantissa <<= shift;
+    const top = exponent - shift + 63;
+    if (top > 1023) return std.math.inf(f64);
+    // Bits of the mantissa below the double's last bit: 11 for a normal
+    // double, more for a subnormal one.
+    const dropped: i64 = if (top >= -1022) 11 else 11 + (-1022 - top);
+    if (dropped > 64) return 0.0;
+    var bits: u64 = undefined;
+    var rest: u64 = undefined;
+    var half: u64 = undefined;
+    if (dropped == 64) {
+        bits = 0;
+        rest = mantissa;
+        half = 1 << 63;
+    } else {
+        const d: u6 = @intCast(dropped);
+        bits = mantissa >> d;
+        rest = mantissa & ((@as(u64, 1) << d) - 1);
+        half = @as(u64, 1) << (d - 1);
+    }
+    if (rest > half or (rest == half and (sticky or bits & 1 != 0))) bits += 1;
+    if (top < -1022) {
+        // A subnormal, or the least normal double when rounding carried.
+        return @bitCast(bits);
+    }
+    // `bits` holds the leading bit at bit 52, or bit 53 when rounding
+    // carried into the next power of two.
+    var biased: u64 = @intCast(top + 1023);
+    if (bits >> 53 != 0) {
+        bits >>= 1;
+        biased += 1;
+        if (biased >= 2047) return std.math.inf(f64);
+    }
+    return @bitCast(biased << 52 | (bits & ((@as(u64, 1) << 52) - 1)));
 }
 
 /// glibc's `atof`, which is `strtod(s, NULL)`.

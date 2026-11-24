@@ -51,14 +51,16 @@ test "refusal: accessor reads past the buffer's memory" {
     var gltf = try parseLoaded(
         \\{"asset":{"version":"2.0"},"buffers":[{"byteLength":4,"uri":"data:;base64,AAAAAA=="}],
         \\"bufferViews":[{"buffer":0,"byteLength":4}],
-        \\"accessors":[{"bufferView":0,"componentType":5126,"type":"VEC4","count":4}]}
+        \\"accessors":[{"bufferView":0,"componentType":5126,"type":"VEC4","count":4},
+        \\{"bufferView":0,"componentType":5125,"type":"VEC4","count":4}]}
     );
     defer gltf.deinit();
     const accessor = &gltf.accessors[0];
     var out: [16]f32 = undefined;
     try testing.expectError(error.OutOfBounds, cgltf.readFloat(&gltf, accessor, 0, &out));
+    // cgltf reads a float's uints as 0 without reading them.
     var out_u: [4]u32 = undefined;
-    try testing.expectError(error.OutOfBounds, cgltf.readUint(&gltf, accessor, 3, &out_u));
+    try testing.expectError(error.OutOfBounds, cgltf.readUint(&gltf, &gltf.accessors[1], 3, &out_u));
     var all: [16]f32 = undefined;
     try testing.expectError(error.OutOfBounds, cgltf.unpackFloats(&gltf, accessor, &all));
 }
@@ -226,6 +228,63 @@ test "refusal: writing into an output too small for the text" {
     }
     var out: std.Io.Writer = .fixed(buffer[0..size]);
     try cgltf.write(&gltf, &out);
+}
+
+test "refusal: writeFile of extras it refuses leaves the file at the path as it was" {
+    // The JSON is counted before the file is created, so a refused write
+    // neither creates nor truncates the file.
+    var json = "{\"asset\":{\"version\":\"2.0\"},\"extras\":{\"a\":1}}".*;
+    var gltf = try cgltf.parse(testing.allocator, &json, .{});
+    defer gltf.deinit();
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const gpa = testing.allocator;
+    const path = try std.fs.path.join(gpa, &.{ ".zig-cache", "tmp", &tmp.sub_path, "a" });
+    defer gpa.free(path);
+    const cwd = std.Io.Dir.cwd();
+    var data = "{\"a\":\"b\x00\"}".*;
+    for ([_]cgltf.FileType{ .gltf, .glb }) |file_type| {
+        try cwd.writeFile(testing.io, .{ .sub_path = path, .data = "kept" });
+        gltf.extras.data = &data;
+        try testing.expectError(error.InvalidExtras, cgltf.writeFile(&gltf, testing.io, path, file_type));
+        gltf.extras.data = null;
+        json[gltf.extras.start_offset + 1] = 0;
+        try testing.expectError(error.InvalidExtras, cgltf.writeFile(&gltf, testing.io, path, file_type));
+        json[gltf.extras.start_offset + 1] = '"';
+        const end_offset = gltf.extras.end_offset;
+        gltf.extras.end_offset = json.len + 1;
+        try testing.expectError(error.OutOfBounds, cgltf.writeFile(&gltf, testing.io, path, file_type));
+        gltf.extras.end_offset = end_offset;
+        const kept = try cwd.readFileAlloc(testing.io, path, gpa, .unlimited);
+        defer gpa.free(kept);
+        try testing.expectEqualStrings("kept", kept);
+    }
+    const missing = try std.fs.path.join(gpa, &.{ ".zig-cache", "tmp", &tmp.sub_path, "missing" });
+    defer gpa.free(missing);
+    gltf.extras.data = &data;
+    try testing.expectError(error.InvalidExtras, cgltf.writeFile(&gltf, testing.io, missing, .gltf));
+    try testing.expectError(error.FileNotFound, cwd.access(testing.io, missing, .{}));
+}
+
+test "writeFile reports a failed write or flush as an IoError, where cgltf reports success" {
+    // A deliberate difference (doc/parity.md): cgltf ignores the results of
+    // `fwrite` and `fclose`. Writing to /dev/full fails at the first flush:
+    // for a short text when the file is flushed, for a long one while the
+    // text is written.
+    if (@import("builtin").os.tag != .linux) return error.SkipZigTest;
+    const gpa = testing.allocator;
+    var long: std.ArrayList(u8) = .empty;
+    defer long.deinit(gpa);
+    try long.appendSlice(gpa, "{\"asset\":{\"version\":\"2.0\"},\"nodes\":[");
+    for (0..1000) |i| try long.print(gpa, "{s}{{\"name\":\"node {d}\"}}", .{ if (i == 0) "" else ",", i });
+    try long.appendSlice(gpa, "]}");
+    for ([_][]const u8{ "{\"asset\":{\"version\":\"2.0\"}}", long.items }) |json| {
+        var gltf = try cgltf.parse(gpa, json, .{});
+        defer gltf.deinit();
+        for ([_]cgltf.FileType{ .gltf, .glb }) |file_type| {
+            try testing.expectError(error.IoError, cgltf.writeFile(&gltf, testing.io, "/dev/full", file_type));
+        }
+    }
 }
 
 fn parseLoadValidate(allocator: std.mem.Allocator, path: [:0]const u8) !void {

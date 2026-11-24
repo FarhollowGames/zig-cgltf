@@ -155,8 +155,8 @@ matrix, which both copy, and every other float, NaN included, are compared as bi
 
 ### Tests and counts
 
-`zig build test` runs 69 tests: 17 unit tests in `src/` and 52 tests in `test/`, through
-`test/differential.zig`. 36 of the 52 are oracle tests; the other 16 check the port's
+`zig build test` runs 81 tests: 17 unit tests in `src/` and 64 tests in `test/`, through
+`test/differential.zig`. 46 of the 64 are oracle tests; the other 18 check the port's
 refusals, failed allocations and a file reader of the caller's.
 
 | feature | inputs |
